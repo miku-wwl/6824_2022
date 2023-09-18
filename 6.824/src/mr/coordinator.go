@@ -2,9 +2,7 @@ package mr
 
 import "log"
 import "net"
-import "os"
 import "net/rpc"
-import "net/http"
 
 
 type Coordinator struct {
@@ -30,15 +28,18 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 //
 func (c *Coordinator) server() {
 	rpc.Register(c)
-	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
-	sockname := coordinatorSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
+	l, e := net.Listen("tcp", ":1234")
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	go http.Serve(l, nil)
+    // 接受连接并处理请求  
+    for {  
+        conn, err := l.Accept()  
+        if err != nil {  
+            log.Fatal("Error accepting connection:", err)  
+        }  
+        go rpc.ServeConn(conn)  
+    }
 }
 
 //
@@ -65,6 +66,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 
 
-	c.server()
+	go c.server()
 	return &c
 }
