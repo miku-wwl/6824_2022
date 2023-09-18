@@ -23,7 +23,7 @@ func main() {
 	}
 
 	mapf, reducef := loadPlugin(os.Args[1])
-
+	
 	mr.Worker(mapf, reducef)
 }
 
@@ -49,3 +49,4 @@ func loadPlugin(filename string) (func(string, string) []mr.KeyValue, func(strin
 
 	return mapf, reducef
 }
+
