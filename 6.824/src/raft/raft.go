@@ -356,36 +356,36 @@ func (rf *Raft) ticker() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-		rf := &Raft{}
-		rf.peers = peers
-		rf.persister = persister
-		rf.me = me
-	
-		// Your initialization code here (2A, 2B, 2C).
-	
-		// 对应论文中的初始化
-		rf.applyChan = applyCh //2B
-	
-		rf.currentTerm = 0
-		rf.votedFor = -1
-		rf.logs = make([]LogEntry, 0)
-	
-		rf.commitIndex = 0
-		rf.lastApplied = 0
-	
-		rf.nextIndex = make([]int, len(peers))
-		rf.matchIndex = make([]int, len(peers))
-	
-		rf.status = Follower
-		rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond // 随机产生150-350ms
-		rf.timer = time.NewTicker(rf.overtime)
-	
-		// initialize from state persisted before a crash
-		rf.readPersist(persister.ReadRaftState())
-	
-		//fmt.Printf("[ 	Make-func-rf(%v) 	]:  %v\n", rf.me, rf.overtime)
-		// start ticker goroutine to start elections
-		go rf.ticker()
-	
-		return rf
-	}
+	rf := &Raft{}
+	rf.peers = peers
+	rf.persister = persister
+	rf.me = me
+
+	// Your initialization code here (2A, 2B, 2C).
+
+	// 对应论文中的初始化
+	rf.applyChan = applyCh //2B
+
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.logs = make([]LogEntry, 0)
+
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+
+	rf.status = Follower
+	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond // 随机产生150-350ms
+	rf.timer = time.NewTicker(rf.overtime)
+
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
+	//fmt.Printf("[ 	Make-func-rf(%v) 	]:  %v\n", rf.me, rf.overtime)
+	// start ticker goroutine to start elections
+	go rf.ticker()
+
+	return rf
+}
