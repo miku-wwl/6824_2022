@@ -247,8 +247,89 @@ type AppendEntriesReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+
 	// Your code here (2A, 2B).
+
+	//defer fmt.Printf("[	    func-RequestVote-rf(%+v)		] : return %v\n", rf.me, reply)
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// 当前节点crash
+	if rf.killed() {
+		reply.VoteState = Killed
+		reply.Term = -1
+		reply.VoteGranted = false
+		return
+	}
+
+	//reason: 出现网络分区，该竞选者已经OutOfDate(过时）
+	if args.Term < rf.currentTerm {
+		reply.VoteState = Expire
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		// 重置自身的状态
+		rf.status = Follower
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+	}
+
+	//fmt.Printf("[	    func-RequestVote-rf(%+v)		] : rf.voted: %v\n", rf.me, rf.votedFor)
+	// 此时比自己任期小的都已经把票还原
+	if rf.votedFor == -1 {
+
+		currentLogIndex := len(rf.logs) - 1
+		currentLogTerm := 0
+		// 如果currentLogIndex下标不是-1就把term赋值过来
+		if currentLogIndex >= 0 {
+			currentLogTerm = rf.logs[currentLogIndex].Term
+		}
+
+		//  If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+		// 论文里的第二个匹配条件，当前peer要符合arg两个参数的预期
+		if args.LastLogIndex < currentLogIndex || args.LastLogTerm < currentLogTerm {
+			reply.VoteState = Expire
+			reply.VoteGranted = false
+			reply.Term = rf.currentTerm
+			return
+		}
+
+		// 给票数，并且返回true
+		rf.votedFor = args.CandidateId
+
+		reply.VoteState = Normal
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true
+
+		rf.timer.Reset(rf.overtime)
+
+		//fmt.Printf("[	    func-RequestVote-rf(%v)		] : voted rf[%v]\n", rf.me, rf.votedFor)
+
+	} else { // 只剩下任期相同，但是票已经给了，此时存在两种情况
+
+		reply.VoteState = Voted
+		reply.VoteGranted = false
+
+		// 1、当前的节点是来自同一轮，不同竞选者的，但是票数已经给了(又或者它本身自己就是竞选者）
+		if rf.votedFor != args.CandidateId {
+			// 告诉reply票已经没了返回false
+			return
+		} else { // 2. 当前的节点票已经给了同一个人了，但是由于sleep等网络原因，又发送了一次请求
+			// 重置自身状态
+			rf.status = Follower
+		}
+
+		rf.timer.Reset(rf.overtime)
+
+	}
+
+	return
 }
+
 
 //
 // example code to send a RequestVote RPC to a server.
