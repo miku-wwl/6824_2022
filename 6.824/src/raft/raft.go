@@ -602,3 +602,88 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	return rf
 }
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, appendNums *int) bool {
+
+	if rf.killed() {
+		return false
+	}
+
+	// paper中5.3节第一段末尾提到，如果append失败应该不断的retries ,直到这个log成功的被store
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	for !ok {
+
+		if rf.killed() {
+			return false
+		}
+		ok = rf.peers[server].Call("Raft.AppendEntries", args, reply)
+
+	}
+
+	// 必须在加在这里否则加载前面retry时进入时，RPC也需要一个锁，但是又获取不到，因为锁已经被加上了
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// 对reply的返回状态进行分支
+	switch reply.AppState {
+
+	// 目标节点crash
+	case AppKilled:
+		{
+			return false
+		}
+
+	// 目标节点正常返回
+	case AppNormal:
+		{
+			// 2A的test目的是让Leader能不能连续任期，所以2A只需要对节点初始化然后返回就好
+			return true
+		}
+
+	//If AppendEntries RPC received from new leader: convert to follower(paper - 5.2)
+	//reason: 出现网络分区，该Leader已经OutOfDate(过时）
+	case AppOutOfDate:
+
+		// 该节点变成追随者,并重置rf状态
+		rf.status = Follower
+		rf.votedFor = -1
+		rf.timer.Reset(rf.overtime)
+		rf.currentTerm = reply.Term
+
+	}
+	return ok
+}
+
+// AppendEntries 建立心跳、同步日志RPC
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// 节点crash
+	if rf.killed() {
+		reply.AppState = AppKilled
+		reply.Term = -1
+		reply.Success = false
+		return
+	}
+
+	// 出现网络分区，args的任期，比当前raft的任期还小，说明args之前所在的分区已经OutOfDate
+	if args.Term < rf.currentTerm {
+		reply.AppState = AppOutOfDate
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
+	// 对当前的rf进行ticker重置
+	rf.currentTerm = args.Term
+	rf.votedFor = args.LeaderId
+	rf.status = Follower
+	rf.timer.Reset(rf.overtime)
+
+	// 对返回的reply进行赋值
+	reply.AppState = AppNormal
+	reply.Term = rf.currentTerm
+	reply.Success = true
+	return
+}
