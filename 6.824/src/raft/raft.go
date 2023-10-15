@@ -279,8 +279,70 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, voteNums *int) bool {
+
+	if rf.killed() {
+		return false
+	}
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	for !ok {
+		// 失败重传
+		if rf.killed() {
+			return false
+		}
+		ok = rf.peers[server].Call("Raft.RequestVote", args, reply)
+
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	//fmt.Printf("[	sendRequestVote(%v) ] : send a election to %v\n", rf.me, server)
+	// 由于网络分区，请求投票的人的term的比自己的还小，不给予投票
+	if args.Term < rf.currentTerm {
+		return false
+	}
+
+	// 对reply的返回情况进行分支处理
+	switch reply.VoteState {
+	// 消息过期有两种情况:
+	// 1.是本身的term过期了比节点的还小
+	// 2.是节点日志的条目落后于节点了
+	case Expire:
+		{
+			rf.status = Follower
+			rf.timer.Reset(rf.overtime)
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
+				rf.votedFor = -1
+			}
+		}
+	case Normal, Voted:
+		//根据是否同意投票，收集选票数量
+		if reply.VoteGranted && reply.Term == rf.currentTerm && *voteNums <= (len(rf.peers)/2) {
+			*voteNums++
+		}
+
+		// 票数超过一半
+		if *voteNums >= (len(rf.peers)/2)+1 {
+
+			*voteNums = 0
+			// 本身就是leader在网络分区中更具有话语权的leader
+			if rf.status == Leader {
+				return ok
+			}
+
+			// 本身不是leader，那么需要初始化nextIndex数组
+			rf.status = Leader
+			rf.nextIndex = make([]int, len(rf.peers))
+			for i, _ := range rf.nextIndex {
+				rf.nextIndex[i] = len(rf.logs) + 1
+			}
+			rf.timer.Reset(HeartBeatTimeout)
+			//fmt.Printf("[	sendRequestVote-func-rf(%v)		] be a leader\n", rf.me)
+		}
+	case Killed:
+		return false
+	}
 	return ok
 }
 
