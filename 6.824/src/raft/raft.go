@@ -210,6 +210,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         int //	需要竞选的人的任期
+	CandidateId  int // 需要竞选的人的Id
+	LastLogIndex int // 竞选人日志条目最后索引
+	LastLogTerm  int // 候选人最后日志条目的任期号
 }
 
 //
@@ -218,6 +222,25 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int       // 投票方的term，如果竞选者比自己还低就改为这个
+	VoteGranted bool      // 是否投票给了该竞选人
+	VoteState   VoteState // 投票状态
+}
+
+// AppendEntriesArgs 由leader复制log条目，也可以当做是心跳连接，注释中的rf为leader节点
+type AppendEntriesArgs struct {
+	Term         int        // leader的任期
+	LeaderId     int        // leader自身的ID
+	PrevLogIndex int        // 预计要从哪里追加的index，因此每次要比当前的len(logs)多1 args初始化为：rf.nextIndex[i] - 1
+	PrevLogTerm  int        // 追加新的日志的任期号(这边传的应该都是当前leader的任期号 args初始化为：rf.currentTerm
+	Entries      []LogEntry // 预计存储的日志（为空时就是心跳连接）
+	LeaderCommit int        // leader的commit index指的是最后一个被大多数机器都复制的日志Index
+}
+
+type AppendEntriesReply struct {
+	Term     int                // leader的term可能是过时的，此时收到的Term用于更新他自己
+	Success  bool               //	如果follower与Args中的PreLogIndex/PreLogTerm都匹配才会接过去新的日志（追加），不匹配直接返回false
+	AppState AppendEntriesState // 追加状态
 }
 
 //
