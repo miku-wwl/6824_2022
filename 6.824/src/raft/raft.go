@@ -9,7 +9,7 @@ package raft
 //   create a new Raft server.
 // rf.Start(command interface{}) (index, term, isleader)
 //   start agreement on a new log entry
-// rf.GetState() (term, isLeader)
+// rf.GetStatus() (term, isLeader)
 //   ask a Raft for its current term, and whether it thinks it is leader
 // ApplyMsg
 //   each time a new entry is committed to the log, each Raft peer
@@ -59,10 +59,8 @@ const (
 	AppNormal    AppendEntriesState = iota // 追加正常
 	AppOutOfDate                           // 追加过时
 	AppKilled                              // Raft程序终止
-	AppRepeat                              // 追加重复 (2B
-	AppCommited                            // 追加的日志已经提交 (2B
+	AppCommitted                           // 追加的日志已经提交 (2B
 	Mismatch                               // 追加不匹配 (2B
-
 )
 
 // LogEntry log条目
@@ -71,7 +69,7 @@ type LogEntry struct {
 	Command interface{} // 状态机的command
 }
 
-//
+// ApplyMsg
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -94,7 +92,7 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-//
+// Raft
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
@@ -133,87 +131,7 @@ type Raft struct {
 	applyChan chan ApplyMsg // 日志都是存在这里client取（2B）
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
-func (rf *Raft) GetState() (int, bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	var term int
-	var isleader bool
-	// Your code here (2A).
-	term = rf.currentTerm
-	//fmt.Println("[	GetState func-rf(", rf.me, ")	]the peer[", rf.me, "] Status is:", rf.status)
-	if rf.status == Leader {
-		isleader = true
-	} else {
-		isleader = false
-	}
-	return term, isleader
-}
-
-//
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-//
-func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
-}
-
-
-//
-// restore previously persisted state.
-//
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
-}
-
-
-//
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
-//
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
-	return true
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
-}
-
-
-//
+// RequestVoteArgs
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
@@ -225,9 +143,11 @@ type RequestVoteArgs struct {
 	LastLogTerm  int // 候选人最后日志条目的任期号
 }
 
-//
+// RequestVoteReply
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
+// 如果竞选者任期比自己的任期还短，那就不投票，返回false
+// 如果当前节点的votedFor为空，且竞选者的日志条目跟收到者的一样新则把票投给该竞选者
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
@@ -247,98 +167,159 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term     int                // leader的term可能是过时的，此时收到的Term用于更新他自己
-	Success  bool               //	如果follower与Args中的PreLogIndex/PreLogTerm都匹配才会接过去新的日志（追加），不匹配直接返回false
-	AppState AppendEntriesState // 追加状态
+	Term        int                // leader的term可能是过时的，此时收到的Term用于更新他自己
+	Success     bool               //	如果follower与Args中的PreLogIndex/PreLogTerm都匹配才会接过去新的日志（追加），不匹配直接返回false
+	AppState    AppendEntriesState // 追加状态
+	UpNextIndex int                //  用于更新请求节点的nextIndex[i]
 }
 
+// Make
+// the service or tester wants to create a Raft server. the ports
+// of all the Raft servers (including this one) are in peers[]. this
+// server's port is peers[me]. all the servers' peers[] arrays
+// have the same order. persister is a place for this server to
+// save its persistent state, and also initially holds the most
+// recent saved state, if any. applyCh is a channel on which the
+// tester or service expects Raft to send ApplyMsg messages.
+// Make() must return quickly, so it should start goroutines
+// for any long-running work.
 //
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+func Make(peers []*labrpc.ClientEnd, me int,
+	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	rf := &Raft{}
+	rf.peers = peers
+	rf.persister = persister
+	rf.me = me
 
-	// Your code here (2A, 2B).
+	// Your initialization code here (2A, 2B, 2C).
 
-	//defer fmt.Printf("[	    func-RequestVote-rf(%+v)		] : return %v\n", rf.me, reply)
+	// 对应论文中的初始化
+	rf.applyChan = applyCh //2B
 
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.logs = make([]LogEntry, 0)
 
-	// 当前节点crash
-	if rf.killed() {
-		reply.VoteState = Killed
-		reply.Term = -1
-		reply.VoteGranted = false
-		return
-	}
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 
-	//reason: 出现网络分区，该竞选者已经OutOfDate(过时）
-	if args.Term < rf.currentTerm {
-		reply.VoteState = Expire
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 
-	if args.Term > rf.currentTerm {
-		// 重置自身的状态
-		rf.status = Follower
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-	}
+	rf.status = Follower
+	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond // 随机产生150-350ms
+	rf.timer = time.NewTicker(rf.overtime)
 
-	//fmt.Printf("[	    func-RequestVote-rf(%+v)		] : rf.voted: %v\n", rf.me, rf.votedFor)
-	// 此时比自己任期小的都已经把票还原
-	if rf.votedFor == -1 {
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
 
-		currentLogIndex := len(rf.logs) - 1
-		currentLogTerm := 0
-		// 如果currentLogIndex下标不是-1就把term赋值过来
-		if currentLogIndex >= 0 {
-			currentLogTerm = rf.logs[currentLogIndex].Term
-		}
+	//fmt.Printf("[ 	Make-func-rf(%v) 	]:  %v\n", rf.me, rf.overtime)
+	// start ticker goroutine to start elections
+	go rf.ticker()
 
-		//  If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
-		// 论文里的第二个匹配条件，当前peer要符合arg两个参数的预期
-		if args.LastLogIndex < currentLogIndex || args.LastLogTerm < currentLogTerm {
-			reply.VoteState = Expire
-			reply.VoteGranted = false
-			reply.Term = rf.currentTerm
-			return
-		}
-
-		// 给票数，并且返回true
-		rf.votedFor = args.CandidateId
-
-		reply.VoteState = Normal
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = true
-
-		rf.timer.Reset(rf.overtime)
-
-		//fmt.Printf("[	    func-RequestVote-rf(%v)		] : voted rf[%v]\n", rf.me, rf.votedFor)
-
-	} else { // 只剩下任期相同，但是票已经给了，此时存在两种情况
-
-		reply.VoteState = Voted
-		reply.VoteGranted = false
-
-		// 1、当前的节点是来自同一轮，不同竞选者的，但是票数已经给了(又或者它本身自己就是竞选者）
-		if rf.votedFor != args.CandidateId {
-			// 告诉reply票已经没了返回false
-			return
-		} else { // 2. 当前的节点票已经给了同一个人了，但是由于sleep等网络原因，又发送了一次请求
-			// 重置自身状态
-			rf.status = Follower
-		}
-
-		rf.timer.Reset(rf.overtime)
-
-	}
-
-	return
+	return rf
 }
 
+// raft的ticker(心脏)
+// The ticker go routine starts a new election if this peer hasn't received
+// heartsbeats recently.
+func (rf *Raft) ticker() {
+
+	for rf.killed() == false {
+
+		// Your code here to check if a leader election should
+		// be started and to randomize sleeping time using
+
+		// 当定时器结束进行超时选举
+		select {
+
+		case <-rf.timer.C:
+			if rf.killed() {
+				return
+			}
+			rf.mu.Lock()
+			// 根据自身的status进行一次ticker
+			switch rf.status {
+
+			// follower变成竞选者
+			case Follower:
+				rf.status = Candidate
+				fallthrough
+			case Candidate:
+
+				// 初始化自身的任期、并把票投给自己
+				rf.currentTerm += 1
+				rf.votedFor = rf.me
+				votedNums := 1 // 统计自身的票数
+
+				// 每轮选举开始时，重新设置选举超时
+				rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond // 随机产生200-400ms
+				rf.timer.Reset(rf.overtime)
+
+				// 对自身以外的节点进行选举
+				for i := 0; i < len(rf.peers); i++ {
+					if i == rf.me {
+						continue
+					}
+
+					voteArgs := RequestVoteArgs{
+						Term:         rf.currentTerm,
+						CandidateId:  rf.me,
+						LastLogIndex: len(rf.logs),
+						LastLogTerm:  0,
+					}
+					if len(rf.logs) > 0 {
+						voteArgs.LastLogTerm = rf.logs[len(rf.logs)-1].Term
+					}
+
+					voteReply := RequestVoteReply{}
+
+					go rf.sendRequestVote(i, &voteArgs, &voteReply, &votedNums)
+				}
+			case Leader:
+				// 进行心跳/日志同步
+				appendNums := 1 // 对于正确返回的节点数量
+				rf.timer.Reset(HeartBeatTimeout)
+				// 构造msg
+				for i := 0; i < len(rf.peers); i++ {
+					if i == rf.me {
+						continue
+					}
+					args := AppendEntriesArgs{
+						Term:         rf.currentTerm,
+						LeaderId:     rf.me,
+						PrevLogIndex: 0,
+						PrevLogTerm:  0,
+						Entries:      nil,
+						LeaderCommit: rf.commitIndex, // commitIndex为大多数log所认可的commitIndex
+					}
+
+					reply := AppendEntriesReply{}
+
+					// 如果nextIndex[i]长度不等于rf.logs,代表与leader的log entries不一致，需要附带过去
+
+					args.Entries = rf.logs[rf.nextIndex[i]-1:]
+
+					// 代表已经不是初始值0
+					if rf.nextIndex[i] > 0 {
+						args.PrevLogIndex = rf.nextIndex[i] - 1
+					}
+
+					if args.PrevLogIndex > 0 {
+						//fmt.Println("len(rf.log):", len(rf.logs), "PrevLogIndex):", args.PrevLogIndex, "rf.nextIndex[i]", rf.nextIndex[i])
+						args.PrevLogTerm = rf.logs[args.PrevLogIndex-1].Term
+					}
+
+					//fmt.Printf("[	ticker(%v) ] : send a election to %v\n", rf.me, i)
+					go rf.sendAppendEntries(i, &args, &reply, &appendNums)
+				}
+			}
+
+			rf.mu.Unlock()
+		}
+
+	}
+}
 
 //
 // example code to send a RequestVote RPC to a server.
@@ -386,7 +367,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//fmt.Printf("[	sendRequestVote(%v) ] : send a election to %v\n", rf.me, server)
+	//fmt.Printf("[-------sendRequestVote(%v)-------] : send a election to %+v;arg: %+v; reply: %+v,\n", rf.me, server, args, reply)
 	// 由于网络分区，请求投票的人的term的比自己的还小，不给予投票
 	if args.Term < rf.currentTerm {
 		return false
@@ -397,6 +378,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	// 消息过期有两种情况:
 	// 1.是本身的term过期了比节点的还小
 	// 2.是节点日志的条目落后于节点了
+
 	case Expire:
 		{
 			rf.status = Follower
@@ -424,7 +406,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			// 本身不是leader，那么需要初始化nextIndex数组
 			rf.status = Leader
 			rf.nextIndex = make([]int, len(rf.peers))
-			for i, _ := range rf.nextIndex {
+			for i := 0; i < len(rf.peers); i++ {
 				rf.nextIndex[i] = len(rf.logs) + 1
 			}
 			rf.timer.Reset(HeartBeatTimeout)
@@ -436,8 +418,298 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-
+// RequestVote
+// example RequestVote RPC handler.
+// 个人认为定时刷新的地方应该是别的节点与当前节点在数据上不冲突时就要刷新
+// 因为如果不是数据冲突那么定时相当于防止自身去选举的一个心跳
+// 如果是因为数据冲突，那么这个节点不用刷新定时是为了当前整个raft能尽快有个正确的leader
 //
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+
+	// Your code here (2A, 2B).
+
+	//defer fmt.Printf("[-------func-RequestVote-rf(%+v)--------] : return %+v\n", rf.me, reply)
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// 当前节点crash
+	if rf.killed() {
+		reply.VoteState = Killed
+		reply.Term = -1
+		reply.VoteGranted = false
+		return
+	}
+
+	//reason: 出现网络分区，该竞选者已经OutOfDate(过时）
+	if args.Term < rf.currentTerm {
+		reply.VoteState = Expire
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		// 重置自身的状态
+		rf.status = Follower
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+	}
+
+	// 此时比自己任期小的都已经把票还原
+	if rf.votedFor == -1 {
+
+		lastLogTerm := 0
+		if len(rf.logs) > 0 {
+			lastLogTerm = rf.logs[len(rf.logs)-1].Term
+		}
+
+		//  If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+		// 论文里的第二个匹配条件，当前peer要符合arg两个参数的预期*
+		// 这里是一个重点，卡这里导致 lab2b rejoin of partitioned leader/ backs up没pass
+		// 1、args.LastLogTerm < lastLogTerm是因为选举时应该首先看term，只要term大的，才代表存活在raft中越久
+		// 2、判断日志的最后一个index是否是最新的前提应该是要在这两个节点任期是否是相同的情况下，判断哪个数据更完整。
+		if args.LastLogTerm < lastLogTerm || (len(rf.logs) > 0 && args.LastLogTerm == rf.logs[len(rf.logs)-1].Term && args.LastLogIndex < len(rf.logs)) {
+
+			reply.VoteState = Expire
+			reply.VoteGranted = false
+			reply.Term = rf.currentTerm
+			return
+		}
+
+		// 给票数，并且返回true
+		rf.votedFor = args.CandidateId
+
+		reply.VoteState = Normal
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true
+
+		rf.timer.Reset(rf.overtime)
+
+		//fmt.Printf("[	    func-RequestVote-rf(%v)		] : voted rf[%v]\n", rf.me, rf.votedFor)
+
+	} else { // 只剩下任期相同，但是票已经给了，此时存在两种情况
+
+		reply.VoteState = Voted
+		reply.VoteGranted = false
+
+		// 1、当前的节点是来自同一轮，不同竞选者的，但是票数已经给了(又或者它本身自己就是竞选者）
+		if rf.votedFor != args.CandidateId {
+			// 告诉reply票已经没了返回false
+			return
+		} else { // 2. 当前的节点票已经给了同一个人了，但是由于sleep等网络原因，又发送了一次请求
+			// 重置自身状态
+			rf.status = Follower
+		}
+
+		rf.timer.Reset(rf.overtime)
+
+	}
+
+	return
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, appendNums *int) {
+
+	if rf.killed() {
+		return
+	}
+
+	// paper中5.3节第一段末尾提到，如果append失败应该不断的retries ,直到这个log成功的被store
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	for !ok {
+
+		if rf.killed() {
+			return
+		}
+		ok = rf.peers[server].Call("Raft.AppendEntries", args, reply)
+
+	}
+
+	// 必须在加在这里否则加载前面retry时进入时，RPC也需要一个锁，但是又获取不到，因为锁已经被加上了
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	//fmt.Printf("[	sendAppendEntries func-rf(%v)	] get reply :%+v from rf(%v)\n", rf.me, reply, server)
+	// 对reply的返回状态进行分支
+	switch reply.AppState {
+
+	// 目标节点crash
+	case AppKilled:
+		{
+			return
+		}
+
+	// 目标节点正常返回
+	case AppNormal:
+		{
+
+			// 2A的test目的是让Leader能不能连续任期，所以2A只需要对节点初始化然后返回就好
+			// 2B需要判断返回的节点是否超过半数commit，才能将自身commit
+			if reply.Success && reply.Term == rf.currentTerm && *appendNums <= len(rf.peers)/2 {
+				*appendNums++
+			}
+
+			// 说明返回的值已经大过了自身数组
+			if rf.nextIndex[server] > len(rf.logs)+1 {
+				return
+			}
+			rf.nextIndex[server] += len(args.Entries)
+			if *appendNums > len(rf.peers)/2 {
+				// 保证幂等性，不会提交第二次
+				*appendNums = 0
+
+				if len(rf.logs) == 0 || rf.logs[len(rf.logs)-1].Term != rf.currentTerm {
+					return
+				}
+
+				for rf.lastApplied < len(rf.logs) {
+					rf.lastApplied++
+					applyMsg := ApplyMsg{
+						CommandValid: true,
+						Command:      rf.logs[rf.lastApplied-1].Command,
+						CommandIndex: rf.lastApplied,
+					}
+					rf.applyChan <- applyMsg
+					rf.commitIndex = rf.lastApplied
+					//fmt.Printf("[	sendAppendEntries func-rf(%v)	] commitLog  \n", rf.me)
+				}
+
+			}
+			//fmt.Printf("[	sendAppendEntries func-rf(%v)	] rf.log :%+v  ; rf.lastApplied:%v\n",
+			//	rf.me, rf.logs, rf.lastApplied)
+
+			return
+		}
+
+	case Mismatch:
+		if args.Term != rf.currentTerm {
+			return
+		}
+		rf.nextIndex[server] = reply.UpNextIndex
+	//If AppendEntries RPC received from new leader: convert to follower(paper - 5.2)
+	//reason: 出现网络分区，该Leader已经OutOfDate(过时）
+	case AppOutOfDate:
+
+		// 该节点变成追随者,并重置rf状态
+		rf.status = Follower
+		rf.votedFor = -1
+		rf.timer.Reset(rf.overtime)
+		rf.currentTerm = reply.Term
+
+	case AppCommitted:
+		if args.Term != rf.currentTerm {
+			return
+		}
+		rf.nextIndex[server] = reply.UpNextIndex
+	}
+
+	return
+}
+
+// AppendEntries 建立心跳、同步日志RPC
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	//fmt.Printf("[	AppendEntries func-rf(%v) 	] arg:%+v,------ rf.logs:%v \n", rf.me, args, rf.logs)
+
+	// 节点crash
+	if rf.killed() {
+		reply.AppState = AppKilled
+		reply.Term = -1
+		reply.Success = false
+		return
+	}
+
+	//  args.Term < rf.currentTerm:出现网络分区，args的任期，比当前raft的任期还小，说明args之前所在的分区已经OutOfDate 2A
+	if args.Term < rf.currentTerm {
+		reply.AppState = AppOutOfDate
+		reply.Term = rf.currentTerm
+		reply.Success = false
+
+		return
+	}
+
+	// 出现conflict的情况
+	// paper:Reply false if log doesn’t contain an entry at prevLogIndex,whose term matches prevLogTerm (§5.3)
+	// 首先要保证自身len(rf)大于0否则数组越界
+	// 1、 如果preLogIndex的大于当前日志的最大的下标说明跟随者缺失日志，拒绝附加日志
+	// 2、 如果preLog出`的任期和preLogIndex处的任期和preLogTerm不相等，那么说明日志存在conflict,拒绝附加日志
+	if args.PrevLogIndex > 0 && (len(rf.logs) < args.PrevLogIndex || rf.logs[args.PrevLogIndex-1].Term != args.PrevLogTerm) {
+
+		reply.AppState = Mismatch
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		reply.UpNextIndex = rf.lastApplied + 1
+		return
+	}
+
+	// 如果当前节点提交的Index比传过来的还高，说明当前节点的日志已经超前,需返回过去
+	if args.PrevLogIndex != -1 && rf.lastApplied > args.PrevLogIndex {
+		reply.AppState = AppCommitted
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		reply.UpNextIndex = rf.lastApplied + 1
+		return
+	}
+
+	// 对当前的rf进行ticker重置
+	rf.currentTerm = args.Term
+	rf.votedFor = args.LeaderId
+	rf.status = Follower
+	rf.timer.Reset(rf.overtime)
+
+	// 对返回的reply进行赋值
+	reply.AppState = AppNormal
+	reply.Term = rf.currentTerm
+	reply.Success = true
+
+	// 如果存在日志包那么进行追加
+	if args.Entries != nil {
+		rf.logs = rf.logs[:args.PrevLogIndex]
+		rf.logs = append(rf.logs, args.Entries...)
+
+	}
+
+	// 将日志提交至与Leader相同
+	for rf.lastApplied < args.LeaderCommit {
+		rf.lastApplied++
+		applyMsg := ApplyMsg{
+			CommandValid: true,
+			CommandIndex: rf.lastApplied,
+			Command:      rf.logs[rf.lastApplied-1].Command,
+		}
+		rf.applyChan <- applyMsg
+		rf.commitIndex = rf.lastApplied
+		//fmt.Printf("[	AppendEntries func-rf(%v)	] commitLog  \n", rf.me)
+	}
+
+	return
+}
+
+// GetState return currentTerm and whether this server
+// believes it is the leader.
+// 2A中的test就会用到
+func (rf *Raft) GetState() (int, bool) {
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	var term int
+	var isleader bool
+	// Your code here (2A).
+	term = rf.currentTerm
+	//fmt.Println("[	GetState func-rf(", rf.me, ")	]the peer[", rf.me, "] Status is:", rf.status)
+	if rf.status == Leader {
+		isleader = true
+	} else {
+		isleader = false
+	}
+	return term, isleader
+
+}
+
+// Start
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -458,11 +730,89 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
+	if rf.killed() {
+		return index, term, false
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// 如果不是leader，直接返回
+	if rf.status != Leader {
+		return index, term, false
+	}
+
+	isLeader = true
+
+	// 初始化日志条目。并进行追加
+	appendLog := LogEntry{Term: rf.currentTerm, Command: command}
+	rf.logs = append(rf.logs, appendLog)
+	index = len(rf.logs)
+	term = rf.currentTerm
 
 	return index, term, isLeader
+
 }
 
 //
+// save Raft's persistent state to stable storage,
+// where it can later be retrieved after a crash and restart.
+// see paper's Figure 2 for a description of what should be persistent.
+//
+func (rf *Raft) persist() {
+	// Your code here (2C).
+	// Example:
+	// w := new(bytes.Buffer)
+	// e := labgob.NewEncoder(w)
+	// e.Encode(rf.xxx)
+	// e.Encode(rf.yyy)
+	// data := w.Bytes()
+	// rf.persister.SaveRaftState(data)
+}
+
+//
+// restore previously persisted state.
+//
+func (rf *Raft) readPersist(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	// Your code here (2C).
+	// Example:
+	// r := bytes.NewBuffer(data)
+	// d := labgob.NewDecoder(r)
+	// var xxx
+	// var yyy
+	// if d.Decode(&xxx) != nil ||
+	//    d.Decode(&yyy) != nil {
+	//   error...
+	// } else {
+	//   rf.xxx = xxx
+	//   rf.yyy = yyy
+	// }
+}
+
+//
+// A service wants to switch to snapshot.  Only do so if Raft hasn't
+// have more recent info since it communicate the snapshot on applyCh.
+//
+func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
+
+	// Your code here (2D).
+
+	return true
+}
+
+// the service says it has created a snapshot that has
+// all info up to and including index. this means the
+// service no longer needs the log through (and including)
+// that index. Raft should now trim its log as much as possible.
+func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	// Your code here (2D).
+
+}
+
+// Kill
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
@@ -481,221 +831,8 @@ func (rf *Raft) Kill() {
 	rf.mu.Unlock()
 }
 
+// 利用killed可以查看是否调用过kill
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
-}
-
-// The ticker go routine starts a new election if this peer hasn't received
-// heartsbeats recently.
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-		// Your code here to check if a leader election should
-		// be started and to randomize sleeping time using
-
-		// 当定时器结束进行超时选举
-		select {
-
-		case <-rf.timer.C:
-			if rf.killed() {
-				return
-			}
-			rf.mu.Lock()
-			// 根据自身的status进行一次ticker
-			switch rf.status {
-
-			// follower变成竞选者
-			case Follower:
-				rf.status = Candidate
-				fallthrough
-			case Candidate:
-
-				// 初始化自身的任期、并把票投给自己
-				rf.currentTerm += 1
-				rf.votedFor = rf.me
-				votedNums := 1 // 统计自身的票数
-
-				// 每轮选举开始时，重新设置选举超时
-				rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond // 随机产生200-400ms
-				rf.timer.Reset(rf.overtime)
-
-				// 对自身以外的节点进行选举
-				for i := 0; i < len(rf.peers); i++ {
-					if i == rf.me {
-						continue
-					}
-
-					voteArgs := RequestVoteArgs{
-						Term:         rf.currentTerm,
-						CandidateId:  rf.me,
-						LastLogIndex: len(rf.logs) - 1,
-						LastLogTerm:  0,
-					}
-					if len(rf.logs) > 0 {
-						voteArgs.LastLogTerm = rf.logs[len(rf.logs)-1].Term
-					}
-
-					voteReply := RequestVoteReply{}
-
-					go rf.sendRequestVote(i, &voteArgs, &voteReply, &votedNums)
-				}
-			case Leader:
-				// 进行心跳/日志同步
-				appendNums := 1 // 对于正确返回的节点数量
-				rf.timer.Reset(HeartBeatTimeout)
-				// 构造msg
-				for i := 0; i < len(rf.peers); i++ {
-					if i == rf.me {
-						continue
-					}
-					appendEntriesArgs := AppendEntriesArgs{
-						Term:         rf.currentTerm,
-						LeaderId:     rf.me,
-						PrevLogIndex: 0,
-						PrevLogTerm:  0,
-						Entries:      nil,
-						LeaderCommit: rf.commitIndex,
-					}
-
-					appendEntriesReply := AppendEntriesReply{}
-					//fmt.Printf("[	ticker(%v) ] : send a election to %v\n", rf.me, i)
-					go rf.sendAppendEntries(i, &appendEntriesArgs, &appendEntriesReply, &appendNums)
-				}
-			}
-
-			rf.mu.Unlock()
-		}
-	}
-}
-
-//
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
-// Make() must return quickly, so it should start goroutines
-// for any long-running work.
-//
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
-
-	// Your initialization code here (2A, 2B, 2C).
-
-	// 对应论文中的初始化
-	rf.applyChan = applyCh //2B
-
-	rf.currentTerm = 0
-	rf.votedFor = -1
-	rf.logs = make([]LogEntry, 0)
-
-	rf.commitIndex = 0
-	rf.lastApplied = 0
-
-	rf.nextIndex = make([]int, len(peers))
-	rf.matchIndex = make([]int, len(peers))
-
-	rf.status = Follower
-	rf.overtime = time.Duration(150+rand.Intn(200)) * time.Millisecond // 随机产生150-350ms
-	rf.timer = time.NewTicker(rf.overtime)
-
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
-	//fmt.Printf("[ 	Make-func-rf(%v) 	]:  %v\n", rf.me, rf.overtime)
-	// start ticker goroutine to start elections
-	go rf.ticker()
-
-	return rf
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, appendNums *int) bool {
-
-	if rf.killed() {
-		return false
-	}
-
-	// paper中5.3节第一段末尾提到，如果append失败应该不断的retries ,直到这个log成功的被store
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	for !ok {
-
-		if rf.killed() {
-			return false
-		}
-		ok = rf.peers[server].Call("Raft.AppendEntries", args, reply)
-
-	}
-
-	// 必须在加在这里否则加载前面retry时进入时，RPC也需要一个锁，但是又获取不到，因为锁已经被加上了
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	// 对reply的返回状态进行分支
-	switch reply.AppState {
-
-	// 目标节点crash
-	case AppKilled:
-		{
-			return false
-		}
-
-	// 目标节点正常返回
-	case AppNormal:
-		{
-			// 2A的test目的是让Leader能不能连续任期，所以2A只需要对节点初始化然后返回就好
-			return true
-		}
-
-	//If AppendEntries RPC received from new leader: convert to follower(paper - 5.2)
-	//reason: 出现网络分区，该Leader已经OutOfDate(过时）
-	case AppOutOfDate:
-
-		// 该节点变成追随者,并重置rf状态
-		rf.status = Follower
-		rf.votedFor = -1
-		rf.timer.Reset(rf.overtime)
-		rf.currentTerm = reply.Term
-
-	}
-	return ok
-}
-
-// AppendEntries 建立心跳、同步日志RPC
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	// 节点crash
-	if rf.killed() {
-		reply.AppState = AppKilled
-		reply.Term = -1
-		reply.Success = false
-		return
-	}
-
-	// 出现网络分区，args的任期，比当前raft的任期还小，说明args之前所在的分区已经OutOfDate
-	if args.Term < rf.currentTerm {
-		reply.AppState = AppOutOfDate
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		return
-	}
-
-	// 对当前的rf进行ticker重置
-	rf.currentTerm = args.Term
-	rf.votedFor = args.LeaderId
-	rf.status = Follower
-	rf.timer.Reset(rf.overtime)
-
-	// 对返回的reply进行赋值
-	reply.AppState = AppNormal
-	reply.Term = rf.currentTerm
-	reply.Success = true
-	return
 }
